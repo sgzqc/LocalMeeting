@@ -1,0 +1,2 @@
+"""Awesome Meeting application package."""
+

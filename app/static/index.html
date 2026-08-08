@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>会议助手</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">会</span><div><h1>会议助手</h1><p>本地语音识别 · 智能会议纪要</p></div></div>
+    <div class="mode-switch" role="tablist">
+      <button class="mode active" data-mode="live">实时会议</button>
+      <button class="mode" data-mode="file">音频文件</button>
+    </div>
+    <button id="clearBtn" class="ghost danger">清空内容</button>
+  </header>
+
+  <main class="grid">
+    <section class="panel input-panel" id="livePanel">
+      <div class="panel-head"><span class="icon">◉</span><div><h2>语音输入</h2><p>浏览器麦克风实时采集</p></div><span id="liveBadge" class="badge">待机</span></div>
+      <div class="panel-body centered">
+        <button id="recordBtn" class="record-btn" aria-label="开始会议"><span class="mic">♩</span><span id="recordLabel">开始会议</span></button>
+        <div class="timer" id="timer">00:00:00</div>
+        <div class="volume-wrap">
+          <div class="volume-label"><span><i class="volume-dot"></i>麦克风音量</span><strong id="volumeStatus">等待输入</strong></div>
+          <div class="meter" role="meter" aria-label="麦克风音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="meterBar"></i><b></b></div>
+          <div class="volume-scale"><span>低</span><span>适中</span><span>高</span></div>
+        </div>
+        <p class="hint">点击开始并允许浏览器使用麦克风</p>
+        <button id="pauseLiveBtn" class="secondary" disabled>暂停</button>
+      </div>
+    </section>
+
+    <section class="panel input-panel disabled-panel" id="filePanel">
+      <div class="panel-head"><span class="icon">⇧</span><div><h2>上传文件</h2><p>识别已经录制好的音频</p></div><span id="fileBadge" class="badge">待上传</span></div>
+      <div class="panel-body">
+        <label class="dropzone" id="dropzone">
+          <input id="fileInput" type="file" accept="audio/*,.m4a,.aac,.flac" hidden>
+          <span class="upload-icon">⇧</span><strong>选择或拖放音频文件</strong>
+          <small>WAV · MP3 · M4A · FLAC · AAC · OGG · WebM</small>
+        </label>
+        <div id="fileInfo" class="file-info hidden"><div><strong id="fileName"></strong><small id="fileSize"></small></div><button id="removeFile" class="icon-btn">×</button></div>
+        <div class="progress"><i id="progressBar"></i></div><p id="progressText" class="progress-text">尚未选择文件</p>
+        <div class="actions file-actions"><button id="transcribeBtn" class="primary" disabled>识别</button><button id="summaryBtn" class="primary" disabled>总结</button><button id="resetFileBtn" class="primary">重置</button></div>
+      </div>
+    </section>
+
+    <section class="panel output-panel">
+      <div class="panel-head"><span class="icon">▤</span><div><h2>语音识别</h2><p id="transcriptMeta">转录内容将在这里实时显示</p></div><div class="output-tools"><button class="copy-btn" data-copy="transcriptText" disabled title="暂无已确认的转录内容">复制</button><button class="download-btn" data-download="transcript" disabled title="请先结束会议">下载</button></div></div>
+      <div class="panel-body scroll-content" id="transcriptText"><div id="finalText" class="empty">等待语音输入...</div><div id="partialText" class="partial"></div></div>
+    </section>
+
+    <section class="panel output-panel">
+      <div class="panel-head"><span class="icon">✦</span><div><h2>归纳总结</h2><p id="summaryMeta">AI 结构化会议纪要</p></div><div class="output-tools"><button class="copy-btn" data-copy="summaryText" disabled title="请先完成会议总结">复制</button><button class="download-btn" data-download="summary" disabled title="请先结束会议并生成最终总结">下载</button></div></div>
+      <div class="panel-body scroll-content summary" id="summaryText"><div id="summaryContent" class="empty">总结结果将在这里显示...</div></div>
+      <div class="summary-footer"><span id="summaryStatus">尚未生成</span></div>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
