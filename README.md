@@ -16,6 +16,19 @@
 
 浏览器访问 <http://127.0.0.1:8000>。首次开始会议时，需要允许浏览器使用麦克风。
 
+## ASR 模型
+
+运行所需的 sherpa-onnx FP32 模型位于 `models/sherpa-onnx-zipformer/`：
+
+- `tokens.txt`
+- `encoder-epoch-99-avg-1.onnx`
+- `decoder-epoch-99-avg-1.onnx`
+- `joiner-epoch-99-avg-1.onnx`
+
+ONNX 文件通过 Git LFS 管理，克隆仓库时需要安装 Git LFS。
+
+用于本地回归验证的示例音频保存在 `tests/fixtures/audio/`，不参与应用运行。
+
 ## 配置
 
 复制 `.env.example` 为 `.env`，配置：
@@ -29,4 +42,3 @@
 ## 音频说明
 
 实时会议直接将浏览器 PCM 音频发送给 sherpa-onnx，不依赖 FFmpeg。上传文件模式通过系统中的 FFmpeg 将 WAV、MP3、M4A、FLAC、AAC、OGG 或 WebM 解码成 16 kHz 单声道 PCM。
-
