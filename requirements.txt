@@ -4,5 +4,6 @@ websockets>=15,<16
 openai>=2.30,<3
 numpy>=2.4,<3
 sherpa-onnx>=1.13,<2
+fireredvad
 sounddevice>=0.5,<1
 python-dotenv>=1.2,<2

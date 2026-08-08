@@ -31,6 +31,10 @@ MAX_UPLOAD_BYTES = 1024 * 1024 * 500
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    # Match the X-ASR live demo's ordering: load the shared recognizer before
+    # any microphone session can begin. Per-session VAD state is initialized
+    # after the WebSocket connects and before the client receives "ready".
+    await asyncio.to_thread(factory.get)
     yield
 
 
@@ -45,12 +49,19 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"status": "ok", "llm_ready": settings.llm_ready, "summary_interval": settings.summary_interval_seconds}
+    return {
+        "status": "ok",
+        "asr_backend": "x_asr",
+        "asr_chunk_ms": 960,
+        "llm_ready": settings.llm_ready,
+        "summary_interval": settings.summary_interval_seconds,
+    }
 
 
 @app.websocket("/ws/live")
 async def live_asr(websocket: WebSocket) -> None:
     await websocket.accept()
+    await websocket.send_json({"type": "status", "state": "initializing"})
     try:
         session = await asyncio.to_thread(StreamingAsr, factory)
     except Exception as exc:

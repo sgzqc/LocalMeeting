@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-MODEL_DIR = ROOT_DIR / "models" / "sherpa-onnx-zipformer"
 UPLOAD_DIR = ROOT_DIR / "uploads"
 
 
