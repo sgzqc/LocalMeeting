@@ -11,6 +11,7 @@ from typing import Callable
 
 import numpy as np
 import sherpa_onnx
+import soxr
 
 from app.config import ROOT_DIR
 
@@ -84,15 +85,19 @@ class FireRedVad:
     def is_speech_detected(self) -> bool:
         return self.in_speech
 
+    def reset(self) -> None:
+        self.vad.reset()
+        self._buffer = np.empty(0, dtype=np.float32)
+        self.in_speech = False
 
-class StreamingLinearResampler:
-    """Stateful linear resampler that preserves phase across browser audio blocks."""
+
+class StreamingResampler:
+    """High-quality SoXR resampler preserving filter state across audio blocks."""
 
     def __init__(self, output_rate: int = SAMPLE_RATE) -> None:
         self.output_rate = output_rate
         self.input_rate: int | None = None
-        self._buffer = np.empty(0, dtype=np.float32)
-        self._position = 0.0
+        self._stream: soxr.ResampleStream | None = None
 
     def process(self, samples: np.ndarray, input_rate: int) -> np.ndarray:
         samples = np.asarray(samples, dtype=np.float32).reshape(-1)
@@ -105,25 +110,18 @@ class StreamingLinearResampler:
         self.input_rate = input_rate
         if input_rate == self.output_rate:
             return samples.copy()
+        if self._stream is None:
+            self._stream = soxr.ResampleStream(
+                input_rate, self.output_rate, 1, dtype="float32", quality="HQ"
+            )
+        return self._stream.resample_chunk(samples, last=False)
 
-        self._buffer = np.concatenate((self._buffer, samples))
-        step = input_rate / self.output_rate
-        available = self._buffer.size - 1 - self._position
-        count = max(0, int(np.ceil(available / step)))
-        if not count:
+    def finish(self) -> np.ndarray:
+        if self._stream is None:
             return np.empty(0, dtype=np.float32)
-        positions = self._position + np.arange(count, dtype=np.float64) * step
-        left = positions.astype(np.int64)
-        fraction = positions - left
-        output = self._buffer[left] * (1.0 - fraction) + self._buffer[left + 1] * fraction
-        self._position = float(positions[-1] + step)
-        # Keep the last source sample so interpolation across the next browser
-        # block uses the same phase and boundary pair as one continuous buffer.
-        drop = min(int(self._position), self._buffer.size - 1)
-        if drop:
-            self._buffer = self._buffer[drop:]
-            self._position -= drop
-        return output.astype(np.float32)
+        output = self._stream.resample_chunk(np.empty(0, dtype=np.float32), last=True)
+        self._stream = None
+        return output
 
 
 class RecognizerFactory:
@@ -140,7 +138,9 @@ class RecognizerFactory:
         )
         self._recognizer: sherpa_onnx.OnlineRecognizer | None = None
         self._load_lock = threading.Lock()
-        self.decode_lock = threading.Lock()
+        self.recognizer_lock = threading.Lock()
+        self._vad_lock = threading.Lock()
+        self._vad_pool: deque[FireRedVad] = deque(maxlen=2)
 
     def get(self) -> sherpa_onnx.OnlineRecognizer:
         with self._load_lock:
@@ -156,7 +156,27 @@ class RecognizerFactory:
                 )
             return self._recognizer
 
+    def preload(self) -> None:
+        self.get()
+        with self._vad_lock:
+            needs_vad = not self._vad_pool
+        if needs_vad:
+            vad = self._new_vad()
+            with self._vad_lock:
+                self._vad_pool.append(vad)
+
     def create_vad(self) -> FireRedVad:
+        with self._vad_lock:
+            if self._vad_pool:
+                return self._vad_pool.popleft()
+        return self._new_vad()
+
+    def release_vad(self, vad: FireRedVad) -> None:
+        vad.reset()
+        with self._vad_lock:
+            self._vad_pool.append(vad)
+
+    def _new_vad(self) -> FireRedVad:
         required = [self.vad_dir / "model.pth.tar", self.vad_dir / "cmvn.ark"]
         missing = [str(path) for path in required if not path.is_file()]
         if missing:
@@ -182,7 +202,9 @@ class StreamingAsr:
     def __init__(self, factory: RecognizerFactory) -> None:
         self.recognizer = factory.get()
         self.vad = factory.create_vad()
-        self.decode_lock = factory.decode_lock
+        self.factory = factory
+        self.recognizer_lock = factory.recognizer_lock
+        self._closed = False
         self.stream = None
         self.active = False
         self.final_parts: list[str] = []
@@ -196,7 +218,7 @@ class StreamingAsr:
             maxlen=max(1, int(self.preroll_seconds * SAMPLE_RATE / VAD_WINDOW))
         )
         self._window_buffer = np.empty(0, dtype=np.float32)
-        self._resampler = StreamingLinearResampler()
+        self._resampler = StreamingResampler()
         self._lock = threading.Lock()
 
     def accept(self, samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> tuple[str, str | None]:
@@ -219,17 +241,19 @@ class StreamingAsr:
         speech = self.vad.is_speech_detected()
         if speech and not self.active:
             self.active = True
-            self.stream = self.recognizer.create_stream()
             self.segment_start_seconds = max(
                 0.0, self.audio_seconds - (len(self._preroll) + 1) * VAD_WINDOW / SAMPLE_RATE
             )
-            for previous in self._preroll:
-                self.stream.accept_waveform(SAMPLE_RATE, previous)
+            with self.recognizer_lock:
+                self.stream = self.recognizer.create_stream()
+                for previous in self._preroll:
+                    self.stream.accept_waveform(SAMPLE_RATE, previous)
 
         if self.active and self.stream is not None:
-            self.stream.accept_waveform(SAMPLE_RATE, window)
-            self._decode_ready()
-            self.partial = normalize_cjk(self.recognizer.get_result(self.stream).strip())
+            with self.recognizer_lock:
+                self.stream.accept_waveform(SAMPLE_RATE, window)
+                self._decode_ready_unlocked()
+                self.partial = normalize_cjk(self.recognizer.get_result(self.stream).strip())
 
         final = None
         if self.active and not speech:
@@ -238,21 +262,21 @@ class StreamingAsr:
         self._preroll.append(window.copy())
         return final
 
-    def _decode_ready(self) -> None:
+    def _decode_ready_unlocked(self) -> None:
         assert self.stream is not None
-        with self.decode_lock:
-            while self.recognizer.is_ready(self.stream):
-                self.recognizer.decode_stream(self.stream)
+        while self.recognizer.is_ready(self.stream):
+            self.recognizer.decode_stream(self.stream)
 
     def _finalize_active(self) -> str | None:
         if not self.active or self.stream is None:
             return None
-        self.stream.accept_waveform(
-            SAMPLE_RATE, np.zeros(int(self.tail_pad_seconds * SAMPLE_RATE), dtype=np.float32)
-        )
-        self.stream.input_finished()
-        self._decode_ready()
-        text = normalize_cjk(self.recognizer.get_result(self.stream).strip())
+        with self.recognizer_lock:
+            self.stream.accept_waveform(
+                SAMPLE_RATE, np.zeros(int(self.tail_pad_seconds * SAMPLE_RATE), dtype=np.float32)
+            )
+            self.stream.input_finished()
+            self._decode_ready_unlocked()
+            text = normalize_cjk(self.recognizer.get_result(self.stream).strip())
         final = self._commit_final(text, self.segment_start_seconds, self.audio_seconds)
         self.partial = ""
         self.active = False
@@ -261,6 +285,14 @@ class StreamingAsr:
 
     def finish(self) -> str | None:
         with self._lock:
+            flushed = self._resampler.finish()
+            if flushed.size:
+                self._window_buffer = np.concatenate((self._window_buffer, flushed))
+            while self._window_buffer.size >= VAD_WINDOW:
+                window = self._window_buffer[:VAD_WINDOW]
+                self._window_buffer = self._window_buffer[VAD_WINDOW:]
+                self.audio_seconds += VAD_WINDOW / SAMPLE_RATE
+                self._process_window(window)
             if self._window_buffer.size:
                 self.audio_seconds += self._window_buffer.size / SAMPLE_RATE
                 padded = np.pad(self._window_buffer, (0, VAD_WINDOW - self._window_buffer.size))
@@ -276,6 +308,11 @@ class StreamingAsr:
                 final = self._finalize_active()
             self.partial = ""
             return final
+
+    def close(self) -> None:
+        if not self._closed:
+            self.factory.release_vad(self.vad)
+            self._closed = True
 
     def _commit_final(self, text: str, start: float, end: float) -> str | None:
         text = text.strip()
@@ -343,6 +380,7 @@ def transcribe_audio_file(
     finally:
         if process.poll() is None:
             process.kill()
+        session.close()
 
 
 def _probe_duration(path: Path) -> float:

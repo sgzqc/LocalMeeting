@@ -34,7 +34,7 @@ async def lifespan(_: FastAPI):
     # Match the X-ASR live demo's ordering: load the shared recognizer before
     # any microphone session can begin. Per-session VAD state is initialized
     # after the WebSocket connects and before the client receives "ready".
-    await asyncio.to_thread(factory.get)
+    await asyncio.to_thread(factory.preload)
     yield
 
 
@@ -136,6 +136,7 @@ async def live_asr(websocket: WebSocket) -> None:
         pass
     finally:
         timer.cancel()
+        await asyncio.to_thread(session.close)
 
 
 def _safe_filename(value: str) -> str:

@@ -3,6 +3,7 @@ uvicorn[standard]>=0.42,<1
 websockets>=15,<16
 openai>=2.30,<3
 numpy>=2.4,<3
+soxr>=1.0,<2
 sherpa-onnx>=1.13,<2
 fireredvad
 sounddevice>=0.5,<1

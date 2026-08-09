@@ -26,6 +26,8 @@
 - X-ASR Zipformer2 greedy-search 流式解码；
 - 中文 BPE 空格规范化。
 
+服务启动时会预加载 X-ASR 和一个 FireRedVAD 会话。浏览器只在收到后端 `ready` 且完成采样率协商后才开始采音，避免初始化期间堆积音频。FireRedVAD 在会话结束时 reset 并返回预热池。
+
 模型目录需包含 `asr/{encoder,decoder,joiner}-960ms.onnx`、`asr/tokens.txt`、`firered_vad/model.pth.tar` 和 `firered_vad/cmvn.ark`。
 
 开发环境会先在 `models/x-asr/` 查找，未找到时使用已验证的 `C:\Code\X-ASR\X-ASR-zh-en\deployment\x-asr-live-demo\models`。其他环境应通过环境变量明确指定。
@@ -46,4 +48,4 @@
 
 ## 音频说明
 
-实时会议将浏览器 PCM 音频发送给后端，后端使用保持跨数据块相位的连续重采样器转为 16 kHz，不依赖 FFmpeg。上传文件模式通过 FFmpeg 解码成 16 kHz 单声道 PCM，再进入同一套 X-ASR 流式状态机。
+实时会议使用 AudioWorklet 在浏览器音频线程采集 PCM，再发送给后端。后端使用 SoXR HQ 流式重采样器转为 16 kHz，其滤波状态会跨浏览器数据块保留，不依赖 FFmpeg。上传文件模式通过 FFmpeg 解码成 16 kHz 单声道 PCM，再进入同一套 X-ASR 流式状态机。

@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import numpy as np
 
 from app.main import app
-from app.services.asr import StreamingAsr, StreamingLinearResampler, normalize_cjk
+from app.services.asr import StreamingAsr, StreamingResampler, normalize_cjk
 
 
 def test_home_and_health():
@@ -19,6 +19,9 @@ def test_home_and_health():
         assert health.json()["status"] == "ok"
         assert health.json()["asr_backend"] == "x_asr"
         assert health.json()["asr_chunk_ms"] == 960
+        worklet = client.get("/static/audio-capture-worklet.js")
+        assert worklet.status_code == 200
+        assert "registerProcessor('pcm-capture'" in worklet.text
 
 
 def test_rejects_unsupported_upload():
@@ -57,21 +60,57 @@ def test_endpoint_segments_keep_natural_repeated_boundary():
 
 def test_streaming_resampler_preserves_phase_across_audio_blocks():
     source = np.linspace(-1.0, 1.0, 4800, dtype=np.float32)
-    whole = StreamingLinearResampler().process(source, 48000)
+    whole_resampler = StreamingResampler()
+    whole = np.concatenate([
+        whole_resampler.process(source, 48000),
+        whole_resampler.finish(),
+    ])
 
-    chunked_resampler = StreamingLinearResampler()
+    chunked_resampler = StreamingResampler()
     chunked = np.concatenate([
         chunked_resampler.process(source[:1301], 48000),
         chunked_resampler.process(source[1301:3077], 48000),
         chunked_resampler.process(source[3077:], 48000),
+        chunked_resampler.finish(),
     ])
 
     assert whole.size == 1600
     assert np.allclose(chunked, whole, atol=1e-6)
 
 
+def test_streaming_resampler_filters_frequencies_above_target_nyquist():
+    time = np.arange(48000, dtype=np.float32) / 48000
+    source = np.sin(2 * np.pi * 12000 * time).astype(np.float32)
+    resampler = StreamingResampler()
+    output = np.concatenate([
+        resampler.process(source, 48000),
+        resampler.finish(),
+    ])
+
+    assert np.sqrt(np.mean(output**2)) < 0.02
+
+
 def test_normalize_cjk_keeps_english_spaces():
     assert normalize_cjk("今 天 是 Monday , weather is good") == "今天是 Monday, weather is good"
+
+
+def test_session_returns_vad_to_factory_only_once():
+    class Factory:
+        def __init__(self):
+            self.released = []
+
+        def release_vad(self, vad):
+            self.released.append(vad)
+
+    session = StreamingAsr.__new__(StreamingAsr)
+    session.factory = Factory()
+    session.vad = object()
+    session._closed = False
+
+    session.close()
+    session.close()
+
+    assert session.factory.released == [session.vad]
 
 
 def test_vad_falling_edge_commits_and_replays_preroll():
@@ -115,7 +154,7 @@ def test_vad_falling_edge_commits_and_replays_preroll():
     session = StreamingAsr.__new__(StreamingAsr)
     session.recognizer = Recognizer()
     session.vad = Vad()
-    session.decode_lock = threading.Lock()
+    session.recognizer_lock = threading.Lock()
     session.stream = None
     session.active = False
     session.final_parts = []
@@ -127,7 +166,7 @@ def test_vad_falling_edge_commits_and_replays_preroll():
     session.tail_pad_seconds = 1.0
     session._preroll = deque(maxlen=21)
     session._window_buffer = np.empty(0, dtype=np.float32)
-    session._resampler = StreamingLinearResampler()
+    session._resampler = StreamingResampler()
     session._lock = threading.Lock()
 
     samples = np.arange(4 * 512, dtype=np.float32) / 4096
